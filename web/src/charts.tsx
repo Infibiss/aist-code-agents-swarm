@@ -43,6 +43,16 @@ export function Pareto({ exps, onPick }: { exps: Summary[]; onPick: (n: string) 
   const ticksX: number[] = [];
   for (let v = lo; v <= hi; v *= 10) ticksX.push(v);
   const fams = Array.from(new Set(pts.map((e) => family(e.model))));
+  // label a dot only if no labelled dot sits close to it; the tooltip and the list carry the rest
+  const labelled = new Set<string>();
+  const placed: { x: number; y: number }[] = [];
+  for (const e of [...pts].sort((a, b) => b.runs - a.runs)) {
+    const px = x(e.tokens_mean), py = y(e.resolved / e.runs);
+    if (placed.every((q) => Math.abs(q.x - px) > 140 || Math.abs(q.y - py) > 18)) {
+      labelled.add(e.name);
+      placed.push({ x: px, y: py });
+    }
+  }
   return (
     <div className="chart-wrap">
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Доля решённых задач против среднего числа токенов на попытку">
@@ -65,8 +75,8 @@ export function Pareto({ exps, onPick }: { exps: Summary[]; onPick: (n: string) 
             <g key={e.name} style={{ cursor: "pointer" }} onMouseEnter={() => setHover(e)} onMouseLeave={() => setHover(null)} onClick={() => onPick(e.name)}>
               <circle cx={cx} cy={cy} r={14} fill="transparent" />
               <circle cx={cx} cy={cy} r={5} fill={FAMILY_COLOR[family(e.model)]} stroke="var(--card)" strokeWidth={2} />
-              {pts.length <= 6 && (
-                <text x={cx + 10} y={cy - 8} className="node-sub" style={{ fill: "var(--text-2)" }}>{e.name}</text>
+              {labelled.has(e.name) && (
+                <text x={cx > W * 0.65 ? cx - 10 : cx + 10} y={cy - 8} textAnchor={cx > W * 0.65 ? "end" : "start"} className="node-sub" style={{ fill: "var(--text-2)" }}>{e.name}</text>
               )}
             </g>
           );

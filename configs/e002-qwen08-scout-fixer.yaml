@@ -1,0 +1,21 @@
+name: e002-qwen08-scout-fixer
+question: Помогает ли малой модели разделение на разведчика и исправителя при том же бюджете вызовов, что у одного агента?
+hypothesis: Записка разведчика сокращает блуждание исправителя по репо, меньше упоров в лимит шагов и контекст, чем в e001.
+decision: Сравниваем с e001 на тех же задачах по решённым, причинам остановки и токенам; при 0.8B ждём сдвиг в причинах, а не в решённых.
+tasks: rebench83
+model: qwen3.5-0.8b-q8
+system:
+  type: scout_fixer
+  scout_steps: 10
+  fixer_steps: 30
+  note_words: 150
+  thinking: false
+  max_tokens: 2048
+budget:
+  requests: 40
+attempts: 1
+workers: 2
+hardware:
+  gpu: GTX 1660 Super 6GB
+  server: llama.cpp b12556, -c 32768 -np 2
+  quant: Q8_0

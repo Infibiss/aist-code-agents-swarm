@@ -45,4 +45,8 @@ def make(spec: dict) -> System:
             from aist_swarm.systems.miniswe import MiniSwe
 
             return MiniSwe(**{k: v for k, v in spec.items() if k != "type"})
+        case "scout_fixer":
+            from aist_swarm.systems.scout_fixer import ScoutFixer
+
+            return ScoutFixer(**{k: v for k, v in spec.items() if k != "type"})
     raise ValueError(f"unknown system type: {spec.get('type')}")

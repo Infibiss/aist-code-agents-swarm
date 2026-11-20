@@ -1,4 +1,4 @@
-"""Task environments and isolated attempts in Docker.
+"""Task environments and isolated attempts: Docker (default) or plain venvs (`AIST_SANDBOX=local`).
 
 A task environment is built once into a named volume: `/env/repo` is the repo at the base commit (history removed,
 so later commits cannot leak the fix) and `/env/venv` holds its dependencies, installed in editable mode against
@@ -8,9 +8,11 @@ attempts never see each other's edits and the editable install points at the att
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,7 +52,7 @@ def volume(task: Task) -> str:
     return "aist-env-" + re.sub(r"[^a-z0-9_.-]", "-", task.instance_id.lower())
 
 
-def env_ready(task: Task) -> bool:
+def docker_env_ready(task: Task) -> bool:
     if volume(task) not in existing_volumes():
         return False
     r = docker("run", "--rm", "-v", f"{volume(task)}:/env:ro", image(task.env.python), "test", "-f", "/env/READY")
@@ -61,9 +63,9 @@ def existing_volumes() -> set[str]:
     return set(docker("volume", "ls", "-q").stdout.split())
 
 
-def build_env(task: Task, log: Path | None = None, force: bool = False) -> bool:
+def docker_build_env(task: Task, log: Path | None = None, force: bool = False) -> bool:
     """Clone the repo at the base commit, strip history, install dependencies. Needs network; returns success."""
-    if not force and env_ready(task):
+    if not force and docker_env_ready(task):
         return True
     vol = volume(task)
     docker("volume", "rm", "-f", vol)
@@ -92,7 +94,7 @@ touch /env/READY
     return r.returncode == 0
 
 
-class Attempt:
+class DockerAttempt:
     """A running container with its own copy of the task repo at /testbed and no network."""
 
     def __init__(self, task: Task, network: bool = False, memory: str = "4g", cpus: str = "2"):
@@ -141,8 +143,116 @@ class Attempt:
     def close(self) -> None:
         docker("rm", "-f", self.name)
 
-    def __enter__(self) -> Attempt:
+    def __enter__(self) -> DockerAttempt:
         return self
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+
+# Local backend: for Linux hosts without Docker (Kaggle, Colab). No network isolation, so the agent could reach
+# the internet there; the judge still runs the hidden tests on a clean reset of the repository.
+
+def _local_dir(task: Task) -> Path:
+    from aist_swarm import paths
+
+    return paths.ENVS / re.sub(r"[^A-Za-z0-9_.-]", "-", task.instance_id)
+
+
+def local_env_ready(task: Task) -> bool:
+    return (_local_dir(task) / "READY").exists()
+
+
+def local_build_env(task: Task, log: Path | None = None, force: bool = False) -> bool:
+    """Repo at the base commit (history removed) plus a uv venv with the task's Python and pinned requirements."""
+    if not force and local_env_ready(task):
+        return True
+    d = _local_dir(task)
+    subprocess.run(["rm", "-rf", str(d)])
+    d.mkdir(parents=True)
+    reqs = " ".join(shlex.quote(r) for r in task.env.requirements)
+    install = task.env.install.replace("pip install", "uv pip install")
+    script = f"""
+set -e
+git init -q testbed && cd testbed
+git fetch -q --depth 1 https://github.com/{task.repo}.git {task.base_commit}
+git checkout -q FETCH_HEAD
+rm -rf .git && git init -q && git add -A && git -c user.email=s@l -c user.name=s commit -qm base
+uv venv -q --seed --python {task.env.python} ../venv
+. ../venv/bin/activate
+{"uv pip install -q " + reqs if reqs else "true"}
+uv pip install -q pytest
+{install}
+git add -A && git -c user.email=s@l -c user.name=s commit -qm env --allow-empty
+touch ../READY
+"""
+    r = subprocess.run(["bash", "-c", script], cwd=d, capture_output=True, text=True, timeout=3600)
+    if log:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(r.stdout + "\n--- stderr ---\n" + r.stderr, encoding="utf-8")
+    return r.returncode == 0
+
+
+_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+class LocalAttempt:
+    """The task's own checkout, reset to the env commit; one attempt per task at a time (the venv's editable
+    install points at this path)."""
+
+    def __init__(self, task: Task, network: bool = False, **_):
+        self.task = task
+        self.dir = _local_dir(task)
+        with _locks_guard:
+            self.lock = _locks.setdefault(task.instance_id, threading.Lock())
+        self.lock.acquire()
+        self._reset()
+
+    def _reset(self) -> None:
+        subprocess.run(["bash", "-c", "git reset -q --hard HEAD && git clean -fdq"], cwd=self.dir / "testbed")
+
+    def exec(self, command: str, timeout: float = 120, input: str | None = None, limit: int | None = OUTPUT_LIMIT,
+             stderr: bool = True) -> ExecResult:
+        venv = self.dir / "venv"
+        wrapped = f"source {shlex.quote(str(venv))}/bin/activate && cd {shlex.quote(str(self.dir / 'testbed'))} && {command}"
+        try:
+            r = subprocess.run(["timeout", "-k", "5", str(int(timeout)), "bash", "-c", wrapped], capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", input=input, timeout=timeout + 30)
+        except subprocess.TimeoutExpired:
+            return ExecResult(124, "", timed_out=True)
+        out = r.stdout + (("\n" + r.stderr) if stderr and r.stderr else "")
+        if limit and len(out) > limit:
+            out = out[: limit // 2] + "\n... [output truncated] ...\n" + out[-limit // 2:]
+        return ExecResult(r.returncode, out, timed_out=r.returncode == 124)
+
+    write = DockerAttempt.write
+    apply = DockerAttempt.apply
+    diff = DockerAttempt.diff
+
+    def close(self) -> None:
+        try:
+            self._reset()
+        finally:
+            self.lock.release()
+
+    def __enter__(self) -> LocalAttempt:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+BACKEND = os.environ.get("AIST_SANDBOX", "docker")
+
+
+def build_env(task: Task, log: Path | None = None, force: bool = False) -> bool:
+    return (local_build_env if BACKEND == "local" else docker_build_env)(task, log, force)
+
+
+def env_ready(task: Task) -> bool:
+    return (local_env_ready if BACKEND == "local" else docker_env_ready)(task)
+
+
+def Attempt(task: Task, **kwargs):  # noqa: N802 - a factory that reads like the class it returns
+    return (LocalAttempt if BACKEND == "local" else DockerAttempt)(task, **kwargs)

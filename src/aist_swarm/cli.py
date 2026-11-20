@@ -100,6 +100,24 @@ def proxy(upstream: list[str] = typer.Option(..., help="name=url or url (fallbac
     serve(ups, host, port)
 
 
+@app.command("kaggle-pack")
+def kaggle_pack(job: Path, slug: str = "infibiss/aist-swarm-run", out: Path = typer.Option(None)):
+    """Pack a job YAML into a self-contained Kaggle script (run.py + kernel-metadata.json)."""
+    from aist_swarm.remote import pack
+
+    target = pack(job, out or paths.HOME / "kaggle" / job.stem, slug)
+    size = (target / "run.py").stat().st_size
+    typer.echo(f"{target} (run.py {size / 1024:.0f} KB)")
+
+
+@app.command("kaggle-merge")
+def kaggle_merge(archive: Path):
+    """Merge results.tar.gz from a Kaggle job into local runs."""
+    from aist_swarm.remote import merge
+
+    typer.echo(f"merged: {', '.join(merge(archive)) or 'nothing'}")
+
+
 @app.command()
 def ui(port: int = 8700, host: str = "127.0.0.1"):
     """Serve the viewer and its API."""

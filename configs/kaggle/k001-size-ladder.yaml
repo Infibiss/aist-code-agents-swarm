@@ -1,0 +1,54 @@
+# First Kaggle job: the size ladder of one family (A) plus the first swarm on a mid model (D), same tasks and budget.
+taskset: rebench83
+llama_tag: b12556
+deadline_hours: 10
+env_jobs: 4
+hardware:
+  gpu: Kaggle T4 16GB
+  server: llama.cpp b12556, built in session, -c 32768 -np 2
+
+models:
+  qwen3.5-0.8b-q8: {repo: ggml-org/Qwen3.5-0.8B-GGUF, file: Qwen3.5-0.8B-Q8_0.gguf}
+  qwen3.5-4b-q4km: {repo: ggml-org/Qwen3.5-4B-GGUF, file: Qwen3.5-4B-Q4_K_M.gguf}
+  qwen3.5-9b-q4km: {repo: unsloth/Qwen3.5-9B-GGUF, file: Qwen3.5-9B-Q4_K_M.gguf}
+
+experiments:
+  - name: k001-qwen08-single
+    question: Совпадает ли результат 0.8B на Kaggle с локальным e001 (паритет стенда)?
+    hypothesis: Около нуля решённых, те же причины остановки, что в e001.
+    decision: Если расходится с e001 на общих задачах, сначала ищем причину в окружении, потом сравниваем модели.
+    model: qwen3.5-0.8b-q8
+    limit: 20
+    system: {type: miniswe, step_limit: 30, thinking: false, max_tokens: 2048}
+    budget: {requests: 40}
+    hardware: {quant: Q8_0}
+
+  - name: k002-qwen4b-single
+    question: Сколько решает один агент на 4B при том же бюджете?
+    hypothesis: Больше нуля, но заметно меньше 9B; меньше ошибок формата, чем у 0.8B.
+    decision: Средняя точка кривой размера; с ней сравниваем рой на 4B (k004).
+    model: qwen3.5-4b-q4km
+    limit: 20
+    system: {type: miniswe, step_limit: 30, thinking: false, max_tokens: 2048}
+    budget: {requests: 40}
+    hardware: {quant: Q4_K_M}
+
+  - name: k003-qwen9b-single
+    question: Сколько решает «большая» модель (9B) одним агентом при том же бюджете?
+    hypothesis: Лучшая точка кривой размера; это планка, которую должен догнать рой малых.
+    decision: Если 9B не лучше 4B, расширяем бюджет шагов, прежде чем делать выводы о размере.
+    model: qwen3.5-9b-q4km
+    limit: 20
+    system: {type: miniswe, step_limit: 30, thinking: false, max_tokens: 2048}
+    budget: {requests: 40}
+    hardware: {quant: Q4_K_M}
+
+  - name: k004-qwen4b-scout-fixer
+    question: Помогает ли 4B разделение на разведчика и исправителя при том же бюджете вызовов?
+    hypothesis: Записка сокращает блуждание исправителя; решённых не меньше, чем у k002.
+    decision: Сравниваем с k002 по задачам парно; разницу в 1–2 задачи считаем шумом до повторов.
+    model: qwen3.5-4b-q4km
+    limit: 20
+    system: {type: scout_fixer, scout_steps: 10, fixer_steps: 30, note_words: 150, thinking: false, max_tokens: 2048}
+    budget: {requests: 40}
+    hardware: {quant: Q4_K_M}

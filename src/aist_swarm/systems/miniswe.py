@@ -66,7 +66,7 @@ def upstream_config(name: str = "swebench_backticks") -> dict:
 class MiniSwe:
     def __init__(self, config: str = "swebench_backticks", step_limit: int = 50, wall_time: int = 0,
                  temperature: float | None = None, max_tokens: int | None = 2048, thinking: bool | None = None,
-                 name: str = "miniswe"):
+                 lenient_format: bool = False, name: str = "miniswe"):
         self.name = name
         self.config = upstream_config(config)
         self.step_limit = step_limit
@@ -74,13 +74,23 @@ class MiniSwe:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.thinking = thinking
+        if lenient_format:  # small models often drop the custom fence tag; accept ```bash, ```sh and bare fences
+            self.config["model"]["action_regex"] = r"```(?:mswea_bash_command|bash|sh|shell)?[ \t]*\n(.*?)\n```"
 
     def solve(self, ctx: Context) -> Outcome:
+        info, steps = self.run_role(ctx, "agent", ctx.task.problem_statement, self.step_limit,
+                                    ctx.out_dir / "trajectory.json")
+        return Outcome(patch=info.get("submission", "") or "", exit_status=info.get("exit_status", ""),
+                       workspace_diff=ctx.attempt.diff(), extra={"steps": steps})
+
+    def run_role(self, ctx: Context, role: str, task_text: str, step_limit: int, out_path,
+                 instance_template: str | None = None) -> tuple[dict, int]:
+        """One mini-SWE-agent loop as `role`: its model calls are metered under that role."""
         from minisweagent.agents.default import DefaultAgent
         from minisweagent.models.litellm_textbased_model import LitellmTextbasedModel
 
         mcfg = {k: v for k, v in self.config["model"].items() if k not in ("model_name", "model_kwargs")}
-        kwargs = {"api_base": ctx.llm_base("agent"), "api_key": "local", "drop_params": True}
+        kwargs = {"api_base": ctx.llm_base(role), "api_key": "local", "drop_params": True}
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
         if self.max_tokens:
@@ -92,12 +102,13 @@ class MiniSwe:
         env = SandboxEnvironment(ctx, timeout=self.config["environment"].get("timeout", 60),
                                  env=self.config["environment"].get("env", {}))
         acfg = dict(self.config["agent"])
-        acfg.update(step_limit=self.step_limit, cost_limit=0, wall_time_limit_seconds=self.wall_time,
-                    output_path=ctx.out_dir / "trajectory.json")
+        if instance_template:
+            acfg["instance_template"] = instance_template
+        acfg.update(step_limit=step_limit, cost_limit=0, wall_time_limit_seconds=self.wall_time,
+                    output_path=out_path)
         agent = DefaultAgent(model, env, **acfg)
         try:
-            info = agent.run(ctx.task.problem_statement)
+            info = agent.run(task_text)
         except Exception as e:  # a crashed agent is a failed attempt, not a crashed experiment
             info = {"exit_status": f"error: {type(e).__name__}: {e}"[:300], "submission": ""}
-        return Outcome(patch=info.get("submission", "") or "", exit_status=info.get("exit_status", ""),
-                       workspace_diff=ctx.attempt.diff(), extra={"steps": agent.n_calls})
+        return info, agent.n_calls

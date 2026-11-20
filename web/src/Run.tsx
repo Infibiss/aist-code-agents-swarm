@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Box, ChevronLeft, ChevronRight, FileText, Gavel, Pause, Play, RotateCcw, SquareTerminal, TriangleAlert } from "lucide-react";
+import { Bot, Box, MessageSquareText, ChevronLeft, ChevronRight, FileText, Gavel, Pause, Play, RotateCcw, SquareTerminal, TriangleAlert } from "lucide-react";
 import { api, GraphNode, RunData, TimelineEvent, fmt, shortTask } from "./api";
 import { Gauge, Verdict } from "./charts";
 
@@ -10,7 +10,7 @@ function layout(nodes: GraphNode[]): Record<string, P> {
   const pos: Record<string, P> = {};
   const roles = nodes.filter((n) => n.kind === "role");
   const models = nodes.filter((n) => n.kind === "model");
-  roles.forEach((n, i) => (pos[n.id] = { x: 310, y: H / 2 + (i - (roles.length - 1) / 2) * 104 }));
+  roles.forEach((n, i) => (pos[n.id] = { x: 310, y: H / 2 + (i - (roles.length - 1) / 2) * 150 }));
   models.forEach((n, i) => (pos[n.id] = { x: 560 + i * 24, y: 72 + i * 56 }));
   for (const n of nodes) {
     if (n.kind === "issue") pos[n.id] = { x: 84, y: H / 2 };
@@ -37,12 +37,14 @@ type Particle = { id: number; from: string; to: string; born: number; color: str
 const TRAVEL_MS = 760;
 const ease = (t: number) => 1 - Math.pow(1 - t, 3);
 
+const ROLE_NAMES: Record<string, string> = { agent: "Агент", scout: "Разведчик", fixer: "Исправитель", critic: "Критик" };
+
 function nodeLabel(n: GraphNode) {
   if (n.kind === "issue") return "Задача";
   if (n.kind === "sandbox") return "Песочница";
   if (n.kind === "judge") return "Судья";
   if (n.kind === "model") return n.id.replace("model:", "");
-  return n.id === "agent" ? "Агент" : n.id;
+  return ROLE_NAMES[n.id] ?? n.id;
 }
 
 export function Run({ exp, task, attempt }: { exp: string; task: string; attempt: string }) {
@@ -58,12 +60,21 @@ export function Run({ exp, task, attempt }: { exp: string; task: string; attempt
   const nowRef = useRef(0);
 
   useEffect(() => {
-    api.run(exp, task, attempt).then((r) => {
-      setD(r);
-      const dur = r.timeline.duration || 1;
-      setSpeed(dur > 300 ? 16 : dur > 60 ? 4 : 1);
-      setPlaying(true);
-    });
+    let stop = false;
+    const load = (tries: number) =>
+      api.run(exp, task, attempt).then((r) => {
+        if (stop) return;
+        setD(r);
+        const dur = r.timeline.duration || 1;
+        setSpeed(dur > 300 ? 16 : dur > 60 ? 4 : 1);
+        const at = Number(new URLSearchParams(window.location.search).get("t"));
+        if (at > 0) {  // ?t=<seconds> opens the replay paused on that moment, for links and screenshots
+          nowRef.current = Math.min(at, dur);
+          setNow(nowRef.current);
+        } else setPlaying(true);
+      }).catch(() => { if (!stop && tries > 0) setTimeout(() => load(tries - 1), 1500); });
+    load(5);
+    return () => { stop = true; };
   }, [exp, task, attempt]);
 
   const events = d?.timeline.events ?? [];
@@ -88,6 +99,7 @@ export function Run({ exp, task, attempt }: { exp: string; task: string; attempt
           if (e.kind === "llm") spawn(e.from, e.to, "var(--text-2)", 3 + Math.min(4, (e.tokens_in ?? 0) / 4000));
           if (e.kind === "exec") spawn(e.from, e.to, "var(--text)", 3);
           if (e.kind === "exit") spawn(e.from, e.to, e.resolved ? "var(--pos)" : "var(--neg)", 5);
+          if (e.kind === "message") spawn(e.from, e.to, "var(--accent)", 4 + Math.min(4, (e.tokens_out ?? 0) / 60));
         }
         if (end > prev && end <= next && e.dur > 0) {
           if (e.kind === "llm") spawn(e.to, e.from, "var(--cat-1)", 3 + Math.min(4, (e.tokens_out ?? 0) / 150));
@@ -126,6 +138,8 @@ export function Run({ exp, task, attempt }: { exp: string; task: string; attempt
   for (const e of events) if (e.t <= now && now <= e.t + Math.max(e.dur, 0.6)) { active.add(e.from); active.add(e.to); }
   const tokensSoFar = done.filter((e) => e.kind === "llm").reduce((s, e) => s + (e.tokens_in ?? 0) + (e.tokens_out ?? 0), 0);
   const callsSoFar = done.filter((e) => e.kind === "llm").length;
+  const cap = d.budget?.requests ?? 0;
+  const roleCalls = (id: string) => done.filter((e) => e.kind === "llm" && e.from === id).length;
   const finished = now >= duration;
 
   return (
@@ -139,7 +153,7 @@ export function Run({ exp, task, attempt }: { exp: string; task: string; attempt
           <div className="sub mono" style={{ fontSize: 13 }}>{task} · {res.model} · {res.exit_status?.split(":")[0]}</div>
         </div>
         <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
-          <Gauge used={res.usage?.requests ?? 0} cap={40} unit="выз." />
+          <Gauge used={res.usage?.requests ?? 0} cap={d.budget?.requests} unit="выз." />
           <span className="mono" style={{ color: "var(--text-2)", fontSize: 13 }}>{fmt.k(res.usage?.tokens ?? 0)} ток. · {fmt.secs(res.solve_seconds ?? 0)}</span>
           <Verdict ok={res.resolved} />
         </div>
@@ -178,18 +192,19 @@ export function Run({ exp, task, attempt }: { exp: string; task: string; attempt
               if (!p) return null;
               const on = active.has(n.id);
               if (n.kind === "role") {
-                const share = Math.min(1, callsSoFar / 40);
-                const R = 34, C = 2 * Math.PI * (R + 7);
+                const mine = roleCalls(n.id);
+                const share = cap ? Math.min(1, mine / cap) : 0;
+                const R = 28, C = 2 * Math.PI * (R + 6);
                 return (
                   <g key={n.id}>
-                    <circle cx={p.x} cy={p.y} r={R + 7} fill="none" stroke="var(--raised)" strokeWidth={3} />
-                    <circle cx={p.x} cy={p.y} r={R + 7} fill="none" stroke={share >= 1 ? "var(--accent)" : "var(--text-2)"} strokeWidth={3}
+                    <circle cx={p.x} cy={p.y} r={R + 6} fill="none" stroke="var(--raised)" strokeWidth={3} />
+                    <circle cx={p.x} cy={p.y} r={R + 6} fill="none" stroke={share >= 1 ? "var(--accent)" : "var(--text-2)"} strokeWidth={3}
                       strokeDasharray={`${C * share} ${C}`} transform={`rotate(-90 ${p.x} ${p.y})`} strokeLinecap="round" />
                     <circle cx={p.x} cy={p.y} r={R} fill="var(--raised)" stroke={on ? "var(--accent)" : "var(--line-strong)"} strokeWidth={1.5}
                       style={{ transition: "stroke 160ms var(--ease)" }} />
-                    <Bot x={p.x - 11} y={p.y - 15} width={22} height={22} strokeWidth={1.5} color="var(--text)" />
-                    <text x={p.x} y={p.y + 21} textAnchor="middle" className="node-sub">{nodeLabel(n)}</text>
-                    <text x={p.x} y={p.y + R + 28} textAnchor="middle" className="node-sub">бюджет {callsSoFar}/40 выз.</text>
+                    <Bot x={p.x - 11} y={p.y - 11} width={22} height={22} strokeWidth={1.5} color="var(--text)" />
+                    <text x={p.x} y={p.y + R + 24} textAnchor="middle" className="node-label">{nodeLabel(n)}</text>
+                    <text x={p.x} y={p.y + R + 40} textAnchor="middle" className="node-sub">{mine}{cap ? `/${cap}` : ""} выз.</text>
                   </g>
                 );
               }
@@ -232,7 +247,7 @@ export function Run({ exp, task, attempt }: { exp: string; task: string; attempt
             </div>
           </div>
           <div className="lanes">
-            {[["модель", "llm"], ["команды", "exec"]].map(([name, kind]) => (
+            {[["модель", "llm"], ["команды", "exec"], ...(events.some((e) => e.kind === "message") ? [["записки", "message"]] : [])].map(([name, kind]) => (
               <div className="lane" key={kind}>
                 <span className="name">{name}</span>
                 <div className="track">
@@ -240,7 +255,8 @@ export function Run({ exp, task, attempt }: { exp: string; task: string; attempt
                     <div key={i} className="blk" title={kind === "exec" ? e.command : `${e.tokens_in} → ${e.tokens_out} ток.`}
                       onClick={() => { seek(e.t); setPinned(i); setPlaying(false); }}
                       style={{ left: `${(e.t / duration) * 100}%`, width: `${Math.max(0.25, (e.dur / duration) * 100)}%`, cursor: "pointer",
-                        background: i === currentIdx ? "var(--accent)" : kind === "llm" ? "var(--seq-3)" : e.returncode === 0 ? "var(--text-3)" : "#6b5a3c" }} />
+                        background: i === currentIdx ? "var(--text)" : kind === "message" ? "var(--accent)" : kind === "llm" ? "var(--seq-3)" : e.returncode === 0 ? "var(--text-3)" : "#6b5a3c",
+                        ...(kind === "message" ? { width: 6, minWidth: 6 } : {}) }} />
                   ))}
                   <div className="playhead" style={{ left: `${(now / duration) * 100}%` }} />
                 </div>
@@ -300,7 +316,7 @@ function StepDetail({ e, index, total }: { e: TimelineEvent; index: number; tota
     exec: { icon: <SquareTerminal size={16} strokeWidth={1.5} />, title: "Команда в песочнице" },
     format_error: { icon: <TriangleAlert size={16} strokeWidth={1.5} />, title: "Ошибка формата ответа" },
     exit: { icon: <Gavel size={16} strokeWidth={1.5} />, title: "Остановка" },
-    message: { icon: <Bot size={16} strokeWidth={1.5} />, title: "Сообщение" },
+    message: { icon: <MessageSquareText size={16} strokeWidth={1.5} />, title: "Записка между ролями" },
   }[e.kind];
   return (
     <div>
@@ -332,6 +348,12 @@ function StepDetail({ e, index, total }: { e: TimelineEvent; index: number; tota
       )}
       {e.kind === "format_error" && <div className="block thought">Модель ответила без блока команды, агент вернул ей подсказку по формату</div>}
       {e.kind === "exit" && <div className="block thought">{e.status}</div>}
+      {e.kind === "message" && (
+        <div className="block">
+          <div className="label">{ROLE_NAMES[e.from] ?? e.from} → {ROLE_NAMES[e.to] ?? e.to} · {e.tokens_out ?? 0} ток.</div>
+          <div className="thought">{e.text}</div>
+        </div>
+      )}
     </div>
   );
 }

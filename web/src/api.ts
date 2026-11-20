@@ -59,6 +59,7 @@ export type RunData = {
     model: string;
     verdict?: { resolved: boolean; applied: boolean; f2p_failed: string[]; p2p_failed: string[]; log_tail: string };
   };
+  budget: { tokens?: number; requests?: number; seconds?: number };
   issue: string;
   timeline: { nodes: GraphNode[]; edges: { from: string; to: string }[]; events: TimelineEvent[]; duration: number };
   patch: string;

@@ -160,7 +160,7 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
 .matrix { overflow-x: auto; }
 .matrix table { border-collapse: separate; border-spacing: 2px; font-size: 12px; }
 .matrix th { font-weight: 400; color: var(--text-3); font-family: var(--mono); padding: 0 8px 6px; text-align: left; white-space: nowrap; }
-.matrix th.col { writing-mode: vertical-rl; transform: rotate(180deg); text-align: left; height: 140px; padding: 0 0 8px; }
+.matrix th.col { writing-mode: vertical-rl; transform: rotate(180deg); text-align: left; height: 180px; padding: 0 0 8px; }
 .matrix td.task { color: var(--text-2); padding-right: 12px; white-space: nowrap; font-family: var(--mono); }
 .matrix td.cell { width: 28px; height: 22px; border-radius: 4px; cursor: pointer; transition: outline-color 120ms var(--ease); outline: 1px solid transparent; }
 .matrix td.cell:hover { outline-color: var(--text-2); }

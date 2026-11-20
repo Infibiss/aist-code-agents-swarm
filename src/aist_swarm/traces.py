@@ -16,7 +16,7 @@ import yaml
 
 from aist_swarm import paths
 
-COMMAND = re.compile(r"```mswea_bash_command\s*\n(.*?)\n```", re.S)
+COMMAND = re.compile(r"```(?:mswea_bash_command|bash|sh|shell)?[ \t]*\n(.*?)\n```", re.S)
 OUTPUT_LIMIT = 6000
 
 
@@ -77,8 +77,11 @@ def run(name: str, task: str, attempt: str) -> dict:
                 break
         if issue:
             break
+    exp_cfg = paths.RUNS / name / "experiment.yaml"
+    budget = (yaml.safe_load(exp_cfg.read_text(encoding="utf-8")) or {}).get("budget", {}) if exp_cfg.exists() else {}
     return {
         "result": result,
+        "budget": budget,
         "issue": _issue_text(issue),
         "timeline": swarm_timeline(trajs, calls, result, _jsonl(d / "messages.jsonl")),
         "patch": _read(d / "patch.diff"),
@@ -126,12 +129,15 @@ def swarm_timeline(trajs: dict[str, dict], calls: list[dict], result: dict, mess
     exits = [e for e in events if e["kind"] == "exit"]
     events = [e for e in events if e["kind"] != "exit"]
     events.sort(key=lambda e: e["t"])
-    if exits:  # one verdict per run, after everything else
+    if exits:  # one verdict per run, from the role that stopped last, after everything else
         end = max((e["t"] + e["dur"] for e in events), default=0)
-        last = exits[-1] | {"t": round(max(end, exits[-1]["t"]), 2)}
-        events.append(last)
-    roles = sorted({e["from"] for e in events} | {e["to"] for e in events if e["kind"] == "message"} | set(trajs))
-    roles = [r for r in roles if r not in models and r not in ("sandbox", "judge", "issue")]
+        final = max(exits, key=lambda e: e["t"])
+        events.append(final | {"t": round(max(end, final["t"]), 2)})
+    roles: list[str] = []
+    for e in events:  # in order of first appearance: the role that starts is the one the issue goes to
+        for r in (e["from"], e["to"]):
+            if r not in roles and r not in models and r not in ("sandbox", "judge", "issue"):
+                roles.append(r)
     nodes = [{"id": "issue", "kind": "issue"}] + [{"id": r, "kind": "role"} for r in roles] + [
         {"id": m, "kind": "model"} for m in sorted(models)] + [{"id": "sandbox", "kind": "sandbox"},
                                                              {"id": "judge", "kind": "judge"}]
@@ -175,6 +181,20 @@ def timeline(traj: dict, calls: list[dict], result: dict, role: str = "agent", t
             elif not extra.get("actions"):
                 events.append({"kind": "format_error", "from": role, "to": role,
                                "t": round(start + c.get("seconds", 0), 2), "dur": 0})
+        elif kind == "user" and "response" in extra:  # format error: the model's reply lives in extra
+            c = calls[call_i] if call_i < len(calls) else {}
+            call_i += 1
+            resp = extra.get("response") or {}
+            content = ""
+            if isinstance(resp, dict):
+                content = ((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+            start = (c.get("t", t0) - t0)
+            events.append({"kind": "llm", "from": role, "to": f"model:{model}", "t": round(start, 2),
+                           "dur": c.get("seconds", 0), "tokens_in": c.get("prompt_tokens", 0),
+                           "tokens_out": c.get("completion_tokens", 0), "text": _clip(content, 3000),
+                           "finish": c.get("finish_reason")})
+            events.append({"kind": "format_error", "from": role, "to": role,
+                           "t": round(start + c.get("seconds", 0), 2), "dur": 0})
         elif kind == "user" and "returncode" in extra and events:
             last = next((e for e in reversed(events) if e["kind"] == "exec" and "output" not in e), None)
             if last:
