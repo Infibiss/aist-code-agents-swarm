@@ -1,10 +1,10 @@
-# First Kaggle job: the size ladder of one family (A) plus the first swarm on a mid model (D), same tasks and budget.
+# Size ladder of one family (A) plus the first swarm on a mid model (D), same tasks and budget.
 taskset: rebench83
 llama_tag: b12556
-deadline_hours: 10
+deadline_hours: 10  # experiments not started by then are skipped; a Kaggle session ends at 12 h
 env_jobs: 4
 hardware:
-  gpu: Kaggle T4 16GB
+  gpu: Kaggle 2x T4 16GB
   server: llama.cpp b12556, built in session, -c 32768 -np 2
 
 models:

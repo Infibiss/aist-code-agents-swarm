@@ -1,0 +1,21 @@
+# End-to-end check of a GPU host: llama.cpp build, task envs, controls, one small model on 3 tasks.
+taskset: rebench83
+llama_tag: b12556
+deadline_hours: 1
+env_jobs: 4
+hardware:
+  server: llama.cpp b12556, built in session, -c 32768 -np 2
+
+models:
+  qwen3.5-0.8b-q8: {repo: ggml-org/Qwen3.5-0.8B-GGUF, file: Qwen3.5-0.8B-Q8_0.gguf}
+
+experiments:
+  - name: smoke-qwen08
+    question: Работает ли стенд на этом хосте от сборки до вердикта?
+    hypothesis: Три задачи проходят весь путь; решённых может быть ноль.
+    decision: Если хоть одна попытка дошла до вердикта судьи, хост годится для больших заданий.
+    model: qwen3.5-0.8b-q8
+    limit: 3
+    system: {type: miniswe, step_limit: 15, thinking: false, max_tokens: 2048}
+    budget: {requests: 20}
+    hardware: {quant: Q8_0}

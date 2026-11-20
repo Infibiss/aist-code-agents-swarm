@@ -110,6 +110,17 @@ def kaggle_pack(job: Path, slug: str = "infibiss/aist-swarm-run", out: Path = ty
     typer.echo(f"{target} (run.py {size / 1024:.0f} KB)")
 
 
+@app.command("ds-pack")
+def ds_pack(job: Path, instance: list[str] = typer.Option(["gt4.1"], help="DataSphere configs, by priority"),
+            out: Path = typer.Option(None), llama_bin: Path = typer.Option(None, help="prebuilt llama-server"),
+            controls: Path = typer.Option(None, help="controls.json from the same kind of host")):
+    """Pack a job YAML for DataSphere Jobs (run.py + config.yaml)."""
+    from aist_swarm.remote import ds_pack as pack
+
+    target = pack(job, out or paths.HOME / "datasphere" / job.stem, instance, llama_bin, controls)
+    typer.echo(f"{target} (run.py {(target / 'run.py').stat().st_size / 1024:.0f} KB)")
+
+
 @app.command("kaggle-merge")
 def kaggle_merge(archive: Path):
     """Merge results.tar.gz from a Kaggle job into local runs."""

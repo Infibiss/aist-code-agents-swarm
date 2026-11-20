@@ -45,17 +45,32 @@ uv run aist-swarm ui                    # API on :8700
 cd web && npm install && npm run dev    # viewer on :5173 (?t=<sec> opens a replay paused at that moment)
 ```
 
-## Run on Kaggle
+## Run on a GPU host
+
+A job YAML (`configs/jobs/`) lists models and experiments. It is packed into one self-contained script that builds
+llama.cpp for the GPU it gets, task envs as venvs, pulls models from Hugging Face, runs one model per GPU behind the
+proxy and writes `results.tar.gz`. `configs/jobs/smoke.yaml` checks a new host end to end in about half an hour.
+
+Kaggle:
 
 ```bash
-uv run aist-swarm kaggle-pack configs/kaggle/k001-size-ladder.yaml   # -> var/kaggle/k001-size-ladder/run.py
-kaggle kernels push -p var/kaggle/k001-size-ladder                    # private, GPU, internet on
+uv run aist-swarm kaggle-pack configs/jobs/k001-size-ladder.yaml   # -> var/kaggle/k001-size-ladder/
+kaggle kernels push -p var/kaggle/k001-size-ladder                  # private, GPU, internet on
 kaggle kernels output infibiss/aist-swarm-run -p var/kaggle/out
 uv run aist-swarm kaggle-merge var/kaggle/out/results.tar.gz
 ```
 
-The job builds llama.cpp for the GPU it gets, task envs as venvs, pulls models from Hugging Face and runs one model
-per GPU behind the proxy.
+Yandex DataSphere Jobs (`pip install datasphere` in a separate venv; `YC_OAUTH_TOKEN` and `DS_PROJECT_ID` in `.env`,
+see `.env.example`):
+
+```bash
+uv run aist-swarm ds-pack configs/jobs/k001-size-ladder.yaml --instance gt4.1   # T4; g1.1 is V100
+cd var/datasphere/k001-size-ladder && datasphere project job execute -p $DS_PROJECT_ID -c config.yaml
+uv run aist-swarm kaggle-merge var/datasphere/k001-size-ladder/results.tar.gz
+```
+
+The first job on a host builds llama.cpp (about 30 min on 4 vCPU); merge keeps the binary in `var/bin/`, and
+`--llama-bin` passes it to the next job. `--controls` reuses gold/empty controls from the same kind of host.
 
 Docker Hub and deb.debian.org are slow or blocked on some networks; the sandbox image uses `mirror.gcr.io` and
 `mirror.yandex.ru` (see `docker/sandbox.Dockerfile`).

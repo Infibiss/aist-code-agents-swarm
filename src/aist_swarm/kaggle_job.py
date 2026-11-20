@@ -1,15 +1,18 @@
-"""Batch job for a Kaggle GPU session. `aist-swarm kaggle-pack` fills PAYLOAD (this package, configs, tasks) and JOB.
+"""Batch job for a GPU session on Kaggle or DataSphere Jobs. `aist-swarm kaggle-pack` / `ds-pack` fill PAYLOAD
+(this package and the task set) and JOB.
 
 Everything runs inside the session: llama.cpp is built for the GPU it gets, task environments are venvs
-(no Docker on Kaggle), models come from Hugging Face, each GPU serves one model at a time behind the metering
-proxy, and results are written to /kaggle/working/results.tar.gz for `aist-swarm kaggle-merge`.
+(no Docker there), models come from Hugging Face, each GPU serves one model at a time behind the metering
+proxy, and results are written to <work>/results.tar.gz for `aist-swarm kaggle-merge`.
 """
 
 import base64
+import glob
 import io
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -17,12 +20,10 @@ import tarfile
 import threading
 import time
 
-import yaml
-
 PAYLOAD = "__PAYLOAD__"
 JOB = json.loads(r"""__JOB__""")
 
-WORK = pathlib.Path("/kaggle/working")
+WORK = pathlib.Path(os.environ.get("AIST_WORK") or ("/kaggle/working" if os.path.isdir("/kaggle/working") else ".")).resolve()
 SRC = pathlib.Path("/tmp/aist")
 HOME = pathlib.Path("/tmp/aist-var")
 VENV = pathlib.Path("/tmp/aist-venv")  # our deps stay out of the system Python that Kaggle's own tooling uses
@@ -43,18 +44,34 @@ def sh(cmd, check=True, **kw):
 def build_llama():
     cap = subprocess.run("nvidia-smi --query-gpu=compute_cap --format=csv,noheader", shell=True,
                          capture_output=True, text=True).stdout.split()[0].replace(".", "")
+    prebuilt = WORK / "llama-server"  # a binary from an earlier job on the same image, passed as an input
+    if prebuilt.exists():
+        LLAMA.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(prebuilt, LLAMA)
+        LLAMA.chmod(0o755)
+        log("using prebuilt llama-server")
+        return
+    if not glob.glob("/usr/local/cuda*/include/cublas_v2.h") and shutil.which("apt-get"):
+        # DataSphere images ship nvcc without the cuBLAS and NVML headers
+        ver = re.search(r"release (\d+)\.(\d+)", subprocess.run("nvcc --version", shell=True, capture_output=True,
+                                                               text=True).stdout)
+        sh(f"apt-get update -qq && apt-get install -y -qq --no-install-recommends "
+           f"cuda-libraries-dev-{ver[1]}-{ver[2]} cuda-nvml-dev-{ver[1]}-{ver[2]} > /tmp/llama-apt.log 2>&1", check=False)
+    cmake = shutil.which("cmake") or str(VENV / "bin" / "cmake")  # DataSphere images have no cmake
     sh(f"git clone -q --depth 1 --branch {JOB['llama_tag']} https://github.com/ggml-org/llama.cpp /tmp/llama")
-    sh(f"cmake -S /tmp/llama -B /tmp/llama/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES={cap} "
-       "-DGGML_CUDA_NO_VMM=ON -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release > /tmp/llama-cmake.log 2>&1")
-    sh("cmake --build /tmp/llama/build --target llama-server -j 4 > /tmp/llama-build.log 2>&1")
+    sh(f"{cmake} -S /tmp/llama -B /tmp/llama/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES={cap} "
+       "-DGGML_CUDA_NO_VMM=ON -DBUILD_SHARED_LIBS=OFF -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release "
+       "> /tmp/llama-cmake.log 2>&1")
+    sh(f"{cmake} --build /tmp/llama/build --target llama-server -j {os.cpu_count()} > /tmp/llama-build.log 2>&1")
     log("llama-server built for sm", cap)
+    shutil.copy(LLAMA, f"/tmp/llama-server-sm{cap}-{JOB['llama_tag']}.bin")
 
 
 def fetch_models():
-    from huggingface_hub import hf_hub_download
-
+    os.makedirs("/tmp/models", exist_ok=True)
     for name, m in JOB["models"].items():
-        m["path"] = hf_hub_download(m["repo"], m["file"], local_dir="/tmp/models")
+        m["path"] = f"/tmp/models/{m['file']}"
+        sh(f"curl -sSfL --retry 5 -C - -o {m['path']} https://huggingface.co/{m['repo']}/resolve/main/{m['file']}")
         log("model", name, m["path"])
 
 
@@ -88,9 +105,10 @@ def gpu_worker(gpu: int, port: int, models: list[str]):
             if time.time() - T0 > JOB["deadline_hours"] * 3600:
                 log("deadline reached, skipping", exp["name"])
                 continue
+            exp.setdefault("proxy", "http://127.0.0.1:18090")  # 8080/8090 are taken on DataSphere hosts
             path = HOME / "configs" / f"{exp['name']}.yaml"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(yaml.safe_dump(exp, allow_unicode=True), encoding="utf-8")
+            path.write_text(json.dumps(exp, ensure_ascii=False), encoding="utf-8")  # JSON is YAML
             cli("run", str(path))
         server.terminate()
         server.wait()
@@ -106,7 +124,7 @@ def collect():
         shutil.copy(p, out / "tasks" / p.name)
     if (HOME / "envs" / "logs").exists():
         shutil.copytree(HOME / "envs" / "logs", out / "env-logs", dirs_exist_ok=True)
-    for p in pathlib.Path("/tmp").glob("llama-*.log"):
+    for p in [*pathlib.Path("/tmp").glob("llama-*.log"), *pathlib.Path("/tmp").glob("llama-server-*.bin")]:
         shutil.copy(p, out / p.name)
     with tarfile.open(WORK / "results.tar.gz", "w:gz") as t:
         t.add(out, arcname="results")
@@ -118,16 +136,19 @@ def main():
     tarfile.open(fileobj=io.BytesIO(base64.b64decode(PAYLOAD)), mode="r:gz").extractall(SRC)
     sh("pip install -q uv")
     sh(f"uv venv -q --seed {VENV}")
-    sh(f"uv pip install --python {PY} -q -e {SRC} pyyaml huggingface_hub mini-swe-agent "
+    sh(f"uv pip install --python {PY} -q -e {SRC} cmake mini-swe-agent "
        "'fedotmas @ git+https://github.com/ITMO-NSS-team/FEDOT.Swarm#subdirectory=packages/fedotmas'")
     (HOME / "tasks").mkdir(parents=True, exist_ok=True)
-    for p in (SRC / "tasks").glob("*.jsonl"):
+    for p in (SRC / "tasks").iterdir():
         shutil.copy(p, HOME / "tasks" / p.name)
 
     builder = threading.Thread(target=build_llama)
     builder.start()
     cli("build", JOB["taskset"], "--jobs", str(JOB.get("env_jobs", 4)))
-    cli("controls", JOB["taskset"], "--jobs", str(JOB.get("env_jobs", 4)))
+    if (HOME / "tasks" / f"{JOB['taskset']}.controls.json").exists():
+        log("controls from an earlier job on this kind of host")
+    else:
+        cli("controls", JOB["taskset"], "--jobs", str(JOB.get("env_jobs", 4)))
     controls = json.loads((HOME / "tasks" / f"{JOB['taskset']}.controls.json").read_text())
     log(f"eligible {len(controls['eligible'])}/{len(controls['tasks'])}")
     if not controls["eligible"]:
@@ -140,11 +161,11 @@ def main():
     gpus = int(subprocess.run("nvidia-smi -L | wc -l", shell=True, capture_output=True, text=True).stdout or 1)
     names = list(JOB["models"])
     plan = {g: names[g::gpus] for g in range(gpus)}
-    ups = [f"--upstream {n}=http://127.0.0.1:{8080 + g}/v1" for g, ns in plan.items() for n in ns]
-    proxy = subprocess.Popen(" ".join([PY, "-m", "aist_swarm.cli", "proxy", *ups, "--port", "8090"]),
+    ups = [f"--upstream {n}=http://127.0.0.1:{18080 + g}/v1" for g, ns in plan.items() for n in ns]
+    proxy = subprocess.Popen(" ".join([PY, "-m", "aist_swarm.cli", "proxy", *ups, "--port", "18090"]),
                              shell=True, env=env())
     time.sleep(5)
-    workers = [threading.Thread(target=gpu_worker, args=(g, 8080 + g, ns)) for g, ns in plan.items() if ns]
+    workers = [threading.Thread(target=gpu_worker, args=(g, 18080 + g, ns)) for g, ns in plan.items() if ns]
     for w in workers:
         w.start()
     for w in workers:
