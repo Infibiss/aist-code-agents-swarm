@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import threading
 import uuid
@@ -183,10 +184,13 @@ uv venv -q --seed --python {task.env.python} ../venv
 {"uv pip install -q " + reqs if reqs else "true"}
 uv pip install -q pytest
 {install}
+../venv/bin/python -c "import pytest"
 git add -A && git -c user.email=s@l -c user.name=s commit -qm env --allow-empty
 touch ../READY
 """
-    r = subprocess.run(["bash", "-c", script], cwd=d, capture_output=True, text=True, timeout=3600)
+    # Kaggle images set UV_SYSTEM_PYTHON, which sends every `uv pip install` to /usr instead of the task venv
+    env = {k: v for k, v in os.environ.items() if k not in ("UV_SYSTEM_PYTHON", "VIRTUAL_ENV", "PYTHONPATH")}
+    r = subprocess.run(["bash", "-c", script], cwd=d, capture_output=True, text=True, timeout=3600, env=env)
     if log:
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text(r.stdout + "\n--- stderr ---\n" + r.stderr, encoding="utf-8")
@@ -204,6 +208,7 @@ class LocalAttempt:
     def __init__(self, task: Task, network: bool = False, **_):
         self.task = task
         self.dir = _local_dir(task)
+        self.tmp = self.dir / "tmp"  # stands in for /tmp: attempts on other tasks run on the same host at once
         with _locks_guard:
             self.lock = _locks.setdefault(task.instance_id, threading.Lock())
         self.lock.acquire()
@@ -211,11 +216,15 @@ class LocalAttempt:
 
     def _reset(self) -> None:
         subprocess.run(["bash", "-c", "git reset -q --hard HEAD && git clean -fdq"], cwd=self.dir / "testbed")
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        self.tmp.mkdir()
 
     def exec(self, command: str, timeout: float = 120, input: str | None = None, limit: int | None = OUTPUT_LIMIT,
              stderr: bool = True) -> ExecResult:
         venv = self.dir / "venv"
-        wrapped = f"source {shlex.quote(str(venv))}/bin/activate && cd {shlex.quote(str(self.dir / 'testbed'))} && {command}"
+        command = command.replace("/tmp/", f"{self.tmp}/")
+        wrapped = (f"export TMPDIR={shlex.quote(str(self.tmp))} && source {shlex.quote(str(venv))}/bin/activate && "
+                   f"cd {shlex.quote(str(self.dir / 'testbed'))} && {command}")
         try:
             r = subprocess.run(["timeout", "-k", "5", str(int(timeout)), "bash", "-c", wrapped], capture_output=True,
                                text=True, encoding="utf-8", errors="replace", input=input, timeout=timeout + 30)

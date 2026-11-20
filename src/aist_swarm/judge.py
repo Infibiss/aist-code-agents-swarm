@@ -56,8 +56,9 @@ def lookup(status: dict[str, str], test_id: str, ok: set[str]) -> bool:
 def evaluate(task: Task, patch: str, timeout: float = 900) -> Verdict:
     t0 = time.time()
     with Attempt(task) as a:
-        if not a.apply(patch).returncode == 0:
-            return Verdict(resolved=False, applied=False, seconds=time.time() - t0)
+        applied = a.apply(patch)
+        if applied.returncode != 0:
+            return Verdict(resolved=False, applied=False, seconds=time.time() - t0, log_tail=applied.output[-2000:])
         test_apply = a.apply(task.test_patch)
         if test_apply.returncode != 0:
             return Verdict(resolved=False, applied=False, seconds=time.time() - t0, log_tail=test_apply.output[-2000:])

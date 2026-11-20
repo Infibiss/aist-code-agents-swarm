@@ -25,6 +25,9 @@ JOB = json.loads(r"""__JOB__""")
 WORK = pathlib.Path("/kaggle/working")
 SRC = pathlib.Path("/tmp/aist")
 HOME = pathlib.Path("/tmp/aist-var")
+VENV = pathlib.Path("/tmp/aist-venv")  # our deps stay out of the system Python that Kaggle's own tooling uses
+PY = str(VENV / "bin" / "python")
+LLAMA = pathlib.Path("/tmp/llama/build/bin/llama-server")
 T0 = time.time()
 
 
@@ -42,7 +45,7 @@ def build_llama():
                          capture_output=True, text=True).stdout.split()[0].replace(".", "")
     sh(f"git clone -q --depth 1 --branch {JOB['llama_tag']} https://github.com/ggml-org/llama.cpp /tmp/llama")
     sh(f"cmake -S /tmp/llama -B /tmp/llama/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES={cap} "
-       "-DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release > /tmp/llama-cmake.log 2>&1")
+       "-DGGML_CUDA_NO_VMM=ON -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release > /tmp/llama-cmake.log 2>&1")
     sh("cmake --build /tmp/llama/build --target llama-server -j 4 > /tmp/llama-build.log 2>&1")
     log("llama-server built for sm", cap)
 
@@ -56,26 +59,30 @@ def fetch_models():
 
 
 def env():
-    return os.environ | {"AIST_SANDBOX": "local", "AIST_SWARM_HOME": str(HOME), "PYTHONUNBUFFERED": "1",
+    base = {k: v for k, v in os.environ.items() if k not in ("UV_SYSTEM_PYTHON", "VIRTUAL_ENV")}
+    return base | {"AIST_SANDBOX": "local", "AIST_SWARM_HOME": str(HOME), "PYTHONUNBUFFERED": "1",
                          "MSWEA_COST_TRACKING": "ignore_errors"}
 
 
 def cli(*args, check=False):
-    return sh(" ".join([sys.executable, "-m", "aist_swarm.cli", *args]), check=check, env=env())
+    return sh(" ".join([PY, "-m", "aist_swarm.cli", *args]), check=check, env=env())
 
 
 def gpu_worker(gpu: int, port: int, models: list[str]):
     for name in models:
         m = JOB["models"][name]
         server = subprocess.Popen(
-            f"/tmp/llama/build/bin/llama-server -m {m['path']} --alias {name} -ngl 99 -c {m.get('ctx', 32768)} "
+            f"{LLAMA} -m {m['path']} --alias {name} -ngl 99 -c {m.get('ctx', 32768)} "
             f"-np {m.get('slots', 2)} --jinja --host 127.0.0.1 --port {port} > /tmp/llama-{name}.log 2>&1",
             shell=True, env=os.environ | {"CUDA_VISIBLE_DEVICES": str(gpu)})
         for _ in range(180):
-            if subprocess.run(f"curl -sf http://127.0.0.1:{port}/health", shell=True,
-                              capture_output=True).returncode == 0:
+            if server.poll() is not None or subprocess.run(f"curl -sf http://127.0.0.1:{port}/health", shell=True,
+                                                           capture_output=True).returncode == 0:
                 break
             time.sleep(5)
+        if server.poll() is not None:
+            log(f"gpu{gpu}: llama-server for {name} exited with {server.returncode}, see llama-{name}.log")
+            continue
         log(f"gpu{gpu}: serving {name}")
         for exp in [e for e in JOB["experiments"] if e["model"] == name]:
             if time.time() - T0 > JOB["deadline_hours"] * 3600:
@@ -110,7 +117,8 @@ def collect():
 def main():
     tarfile.open(fileobj=io.BytesIO(base64.b64decode(PAYLOAD)), mode="r:gz").extractall(SRC)
     sh("pip install -q uv")
-    sh(f"uv pip install --system -q -e {SRC} mini-swe-agent "
+    sh(f"uv venv -q --seed {VENV}")
+    sh(f"uv pip install --python {PY} -q -e {SRC} pyyaml huggingface_hub mini-swe-agent "
        "'fedotmas @ git+https://github.com/ITMO-NSS-team/FEDOT.Swarm#subdirectory=packages/fedotmas'")
     (HOME / "tasks").mkdir(parents=True, exist_ok=True)
     for p in (SRC / "tasks").glob("*.jsonl"):
@@ -120,14 +128,20 @@ def main():
     builder.start()
     cli("build", JOB["taskset"], "--jobs", str(JOB.get("env_jobs", 4)))
     cli("controls", JOB["taskset"], "--jobs", str(JOB.get("env_jobs", 4)))
+    controls = json.loads((HOME / "tasks" / f"{JOB['taskset']}.controls.json").read_text())
+    log(f"eligible {len(controls['eligible'])}/{len(controls['tasks'])}")
+    if not controls["eligible"]:
+        raise SystemExit("no task passed the controls; see env-logs and controls.json")
     fetch_models()
     builder.join()
+    if not LLAMA.exists():
+        raise SystemExit("llama-server did not build; see llama-cmake.log and llama-build.log")
 
     gpus = int(subprocess.run("nvidia-smi -L | wc -l", shell=True, capture_output=True, text=True).stdout or 1)
     names = list(JOB["models"])
     plan = {g: names[g::gpus] for g in range(gpus)}
     ups = [f"--upstream {n}=http://127.0.0.1:{8080 + g}/v1" for g, ns in plan.items() for n in ns]
-    proxy = subprocess.Popen(" ".join([sys.executable, "-m", "aist_swarm.cli", "proxy", *ups, "--port", "8090"]),
+    proxy = subprocess.Popen(" ".join([PY, "-m", "aist_swarm.cli", "proxy", *ups, "--port", "8090"]),
                              shell=True, env=env())
     time.sleep(5)
     workers = [threading.Thread(target=gpu_worker, args=(g, 8080 + g, ns)) for g, ns in plan.items() if ns]
