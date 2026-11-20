@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import threading
 import uuid
 from dataclasses import dataclass
@@ -208,7 +209,8 @@ class LocalAttempt:
     def __init__(self, task: Task, network: bool = False, **_):
         self.task = task
         self.dir = _local_dir(task)
-        self.tmp = self.dir / "tmp"  # stands in for /tmp: attempts on other tasks run on the same host at once
+        # stands in for /tmp, since attempts on other tasks run on the same host at once
+        self.tmp = Path(tempfile.gettempdir()) / f"aist-{self.dir.name}"
         with _locks_guard:
             self.lock = _locks.setdefault(task.instance_id, threading.Lock())
         self.lock.acquire()
@@ -217,7 +219,7 @@ class LocalAttempt:
     def _reset(self) -> None:
         subprocess.run(["bash", "-c", "git reset -q --hard HEAD && git clean -fdq"], cwd=self.dir / "testbed")
         shutil.rmtree(self.tmp, ignore_errors=True)
-        self.tmp.mkdir()
+        self.tmp.mkdir(parents=True)
 
     def exec(self, command: str, timeout: float = 120, input: str | None = None, limit: int | None = OUTPUT_LIMIT,
              stderr: bool = True) -> ExecResult:
