@@ -55,11 +55,14 @@ def run_one(exp: Experiment, task: Task, i: int) -> dict:
                               model=exp.model)
         outcome = system.solve(ctx)
     solve_s = time.time() - t0
-    verdict = judge.evaluate(task, outcome.patch)
+    # the repo as the attempt left it is the answer (as in SWE-agent); an attempt cut off by a step or context
+    # limit still counts, and a diff typed into the submission without editing files does not
+    judged = "workspace" if outcome.workspace_diff.strip() else "submission"
+    verdict = judge.evaluate(task, outcome.workspace_diff if judged == "workspace" else outcome.patch)
     usage = httpx.get(f"{exp.proxy}/usage/{run_key}", timeout=10).json()
     result = {"experiment": exp.name, "task": task.instance_id, "attempt": i, "system": system.name,
               "model": exp.model, "resolved": verdict.resolved, "applied": verdict.applied,
-              "exit_status": outcome.exit_status, "solve_seconds": round(solve_s, 1),
+              "judged": judged, "exit_status": outcome.exit_status, "solve_seconds": round(solve_s, 1),
               "patch_lines": outcome.patch.count("\n"), "usage": usage, "extra": outcome.extra}
     (out / "result.json").write_text(json.dumps({**result, "verdict": verdict.model_dump()}, indent=1),
                                      encoding="utf-8")

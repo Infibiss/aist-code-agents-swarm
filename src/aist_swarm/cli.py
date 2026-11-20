@@ -130,6 +130,29 @@ def kaggle_merge(archive: Path):
 
 
 @app.command()
+def rejudge(experiment: str, jobs: int = 2):
+    """Judge each attempt by what it left in the repo (workspace.diff), whatever it submitted; writes rejudge.json."""
+    from aist_swarm import judge, runner
+
+    root = paths.RUNS / experiment
+    exp = runner.Experiment.load(root / "experiment.yaml")
+    tasks = {t.instance_id: t for t in T.load(taskset_path(exp.tasks))}
+    attempts = sorted(d for d in root.glob("*/a*") if (d / "workspace.diff").exists())
+
+    def one(d: Path):
+        diff = (d / "workspace.diff").read_text(encoding="utf-8")
+        v = judge.evaluate(tasks[d.parent.name], diff) if diff.strip() else judge.Verdict(resolved=False, applied=False)
+        (d / "rejudge.json").write_text(v.model_dump_json(indent=1), encoding="utf-8")
+        typer.echo(f"{'PASS' if v.resolved else 'fail'} {d.parent.name} {d.name} lines={diff.count(chr(10))} "
+                   f"applied={v.applied} f2p_failed={len(v.f2p_failed)} p2p_failed={len(v.p2p_failed)}")
+        return v.resolved
+
+    with ThreadPoolExecutor(jobs) as pool:
+        ok = sum(pool.map(one, attempts))
+    typer.echo(f"{experiment}: resolved by workspace {ok}/{len(attempts)}")
+
+
+@app.command()
 def ui(port: int = 8700, host: str = "127.0.0.1"):
     """Serve the viewer and its API."""
     from aist_swarm.web import serve
