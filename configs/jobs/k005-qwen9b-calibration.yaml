@@ -1,0 +1,22 @@
+# Calibration: was k003 (9B, 0/20) limited by the harness or by the model? Same tasks, a realistic agent budget.
+taskset: rebench83
+llama_tag: b12556
+deadline_hours: 4  # experiments not started by then are skipped (caps a paid run)
+env_jobs: 4
+hardware:
+  server: llama.cpp b12556, built in session, -c 131072 -np 2
+
+models:
+  # Qwen3.5 attends globally in a quarter of its layers, so 64k per slot fits a 16 GB T4 next to Q4 weights
+  qwen3.5-9b-q4km: {repo: unsloth/Qwen3.5-9B-GGUF, file: Qwen3.5-9B-Q4_K_M.gguf, ctx: 131072, slots: 2}
+
+experiments:
+  - name: k005-qwen9b-calibration
+    question: Решает ли 9B хоть что-то на тех же 20 задачах, если дать ему 64k контекста и 100 шагов?
+    hypothesis: 1–3 задачи из 20; провалы по контексту и шагам уходят, остаются ошибки в самой правке.
+    decision: Ноль — набор слишком трудный для этих размеров, дальше работаем на лёгком наборе. Больше нуля — этот бюджет становится базовым для роёв.
+    model: qwen3.5-9b-q4km
+    limit: 20
+    system: {type: miniswe, step_limit: 100, thinking: false, max_tokens: 2048}
+    budget: {requests: 120}
+    hardware: {quant: Q4_K_M}
