@@ -2,7 +2,7 @@
 
 Does a swarm of small local models fix more bugs than one larger model on the same GPU, and when? This repo is the
 stand that measures it: real Python bugs, hidden tests as the judge, and the same budget for every system.
-Research prototype of the AIST lab; the plan is in [PLAN.md](PLAN.md).
+Research prototype of the AIST lab (ITMO).
 
 ## Viewer
 
@@ -59,3 +59,7 @@ per GPU behind the proxy.
 
 Docker Hub and deb.debian.org are slow or blocked on some networks; the sandbox image uses `mirror.gcr.io` and
 `mirror.yandex.ru` (see `docker/sandbox.Dockerfile`).
+
+## License
+
+MIT, see [LICENSE](LICENSE).

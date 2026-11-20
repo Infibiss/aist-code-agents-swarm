@@ -18,3 +18,9 @@ __pycache__/
 web/node_modules/
 web/dist/
 *.tsbuildinfo
+
+# private notes and materials, kept locally
+PLAN.md
+docs/*
+!docs/img/
+.claude/
