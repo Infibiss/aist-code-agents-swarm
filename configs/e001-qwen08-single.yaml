@@ -1,0 +1,17 @@
+# A: single mini-SWE-agent on the smallest model, local GTX 1660 Super (6 GB), llama.cpp, Q8_0, thinking off.
+name: e001-qwen08-single
+tasks: rebench83
+model: qwen3.5-0.8b-q8
+system:
+  type: miniswe
+  step_limit: 30
+  thinking: false
+  max_tokens: 2048
+budget:
+  requests: 40
+attempts: 1
+workers: 2
+hardware:
+  gpu: GTX 1660 Super 6GB
+  server: llama.cpp b12556, -c 32768 -np 2
+  quant: Q8_0

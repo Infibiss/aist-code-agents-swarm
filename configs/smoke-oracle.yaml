@@ -1,0 +1,12 @@
+# End-to-end check without a GPU: a scripted oracle model applies the gold patch through mini-SWE-agent.
+# Start first:  aist-swarm fake-llm rebench83   and   aist-swarm proxy --upstream http://127.0.0.1:8099/v1
+name: smoke-oracle
+tasks: rebench83
+model: fake
+system:
+  type: miniswe
+  step_limit: 10
+budget:
+  requests: 20
+attempts: 1
+workers: 2

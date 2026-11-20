@@ -1,0 +1,19 @@
+# runtime data: task environments, runs, model weights
+var/
+*.gguf
+*.safetensors
+
+# python
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# secrets
+.env
+*.token
+
+# web
+web/node_modules/
+web/dist/
