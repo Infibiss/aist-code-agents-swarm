@@ -100,6 +100,15 @@ def proxy(upstream: list[str] = typer.Option(..., help="name=url or url (fallbac
     serve(ups, host, port)
 
 
+@app.command()
+def ui(port: int = 8700, host: str = "127.0.0.1"):
+    """Serve the viewer and its API."""
+    from aist_swarm.web import serve
+
+    typer.echo(f"viewer on http://{host}:{port}")
+    serve(host, port)
+
+
 @app.command("fake-llm")
 def fake_llm(taskset: str, port: int = 8099):
     """Scripted oracle model for end-to-end tests without a GPU."""

@@ -22,6 +22,9 @@ from aist_swarm.tasks import Task
 
 class Experiment(BaseModel):
     name: str
+    question: str = ""
+    hypothesis: str = ""
+    decision: str = ""
     tasks: str
     ids: list[str] = Field(default_factory=list)
     limit: int = 0

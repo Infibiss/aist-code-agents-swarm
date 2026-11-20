@@ -1,5 +1,9 @@
-# A: single mini-SWE-agent on the smallest model, local GTX 1660 Super (6 GB), llama.cpp, Q8_0, thinking off.
 name: e001-qwen08-single
+question: Справляется ли самая маленькая модель (Qwen3.5-0.8B) с исправлением бага
+  в одиночку?
+hypothesis: 'Нет: упрётся в формат ответа, лимит шагов и контекст. Это нижняя точка
+  кривой «размер → качество».'
+decision: Если решено 0 из 6, переходим к 2B и 4B с тем же харнессом и бюджетом.
 tasks: rebench83
 model: qwen3.5-0.8b-q8
 system:

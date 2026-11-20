@@ -85,7 +85,7 @@ git add -A && git commit -qm env --allow-empty
 cp -a /testbed /env/repo
 touch /env/READY
 """
-    r = docker("run", "--rm", "-v", f"{vol}:/env", image(task.env.python), "bash", "-c", script, timeout=3600)
+    r = docker("run", "--rm", "-v", f"{vol}:/env", "-v", "aist-pip-cache:/root/.cache/pip", image(task.env.python), "bash", "-c", script, timeout=3600)
     if log:
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text(r.stdout + "\n--- stderr ---\n" + r.stderr, encoding="utf-8")
