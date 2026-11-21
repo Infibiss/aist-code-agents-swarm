@@ -1,0 +1,43 @@
+# First comparison on the easy tier with the k005 budget: one 4B agent, a 4B scout-fixer swarm, one 9B agent.
+taskset: rebench-easy
+llama_tag: b12556
+deadline_hours: 10  # experiments not started by then are skipped; a Kaggle session ends at 12 h
+env_jobs: 4
+hardware:
+  gpu: Kaggle 2x T4 16GB
+  server: llama.cpp b12556, built in session, -c 131072 -np 2
+
+models:
+  qwen3.5-4b-q4km: {repo: ggml-org/Qwen3.5-4B-GGUF, file: Qwen3.5-4B-Q4_K_M.gguf, ctx: 131072, slots: 2}
+  qwen3.5-9b-q4km: {repo: unsloth/Qwen3.5-9B-GGUF, file: Qwen3.5-9B-Q4_K_M.gguf, ctx: 131072, slots: 2}
+
+experiments:
+  - name: k006-qwen4b-single-easy
+    question: Сколько лёгких задач решает один агент на 4B с бюджетом k005?
+    hypothesis: Заметно больше нуля, но меньше 9B.
+    decision: Базовая точка для роя на 4B (k007), сравнение по задачам попарно.
+    model: qwen3.5-4b-q4km
+    limit: 20
+    system: {type: miniswe, step_limit: 100, thinking: false, max_tokens: 2048}
+    budget: {requests: 120}
+    hardware: {quant: Q4_K_M}
+
+  - name: k007-qwen4b-scout-fixer-easy
+    question: Помогает ли 4B разделение на разведчика и исправителя при том же бюджете вызовов?
+    hypothesis: Решённых не меньше, чем у k006; исправитель тратит меньше шагов на поиск.
+    decision: Лучше k006 — развиваем рой (параллельные исправители с отбором по тестам). Хуже — разбираем записки.
+    model: qwen3.5-4b-q4km
+    limit: 20
+    system: {type: scout_fixer, scout_steps: 20, fixer_steps: 80, note_words: 150, thinking: false, max_tokens: 2048}
+    budget: {requests: 120}
+    hardware: {quant: Q4_K_M}
+
+  - name: k008-qwen9b-single-easy
+    question: Сколько лёгких задач решает «большая» 9B одним агентом при том же бюджете?
+    hypothesis: Лучшая точка; планка для роя на 4B.
+    decision: Если рой на 4B догоняет 9B, это первый аргумент в пользу роя малых.
+    model: qwen3.5-9b-q4km
+    limit: 20
+    system: {type: miniswe, step_limit: 100, thinking: false, max_tokens: 2048}
+    budget: {requests: 120}
+    hardware: {quant: Q4_K_M}
